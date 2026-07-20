@@ -19,3 +19,37 @@ main {
   margin: 0 auto;
   padding: 2rem 1.25rem;
 }
+
+.upload-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  align-items: flex-start;
+  margin-bottom: 2rem;
+  font-size: 0.95rem;
+  color: #444;
+}
+
+.upload-error {
+  color: #9a1c1c;
+  background: #fdecec;
+  border: 1px solid #f3c2c2;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+}
+
+.document-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.document-heading {
+  margin-top: 1.75rem;
+  margin-bottom: 0.25rem;
+  font-size: 1.1rem;
+}
+
+.paragraph-block {
+  margin: 0 0 1rem;
+}
