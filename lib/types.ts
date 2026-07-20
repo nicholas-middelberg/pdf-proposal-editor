@@ -1,6 +1,8 @@
 // Core interfaces (SPECS.md → "Key interfaces"). Pinned in Task 1 because
 // everything downstream keys on Block.id (D-015).
 
+import type { FactFlag } from './facts/compare';
+
 export type BlockType = 'heading' | 'paragraph';
 
 export type BBox = [number, number, number, number];
@@ -28,6 +30,9 @@ export type PositionedItem = {
   y: number;
   page: number;
   bbox: BBox;
+  /** Optional: drives segment.ts heading detection. Re-detect (D-003) can
+   * still send just {text, x, y} — this field is extra, not required. */
+  fontSize?: number;
 };
 
 export type ParseResult = {
@@ -43,12 +48,15 @@ export type EditRequest = {
 
 /**
  * `original` is the IMMEDIATE PRIOR text — the validation baseline — not the
- * pristine parse (D-015).
+ * pristine parse (D-015). `flags` is the D-013 validator's output, already
+ * run server-side (D-012 rung 2) — the diff UI surfaces these, it never
+ * re-runs the check.
  */
 export type EditProposal = {
   blockId: string;
   original: string;
   proposed: string;
+  flags: FactFlag[];
 };
 
 export type HistoryEntry = {
