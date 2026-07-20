@@ -2,14 +2,29 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { DocumentView } from '../components/DocumentView';
-import { currentBlocks, initDoc, type DocState } from '../lib/store';
+import { EditableParagraph } from '../components/EditableParagraph';
+import { HistoryPanel } from '../components/HistoryPanel';
+import {
+  appliedHistory,
+  applyEdit,
+  canUndo,
+  currentBlocks,
+  initDoc,
+  recordRejection,
+  setBlocks,
+  undo,
+  type DocState,
+} from '../lib/store';
 import type { ParseWorkerRequest, ParseWorkerResponse } from '../lib/pdf/parse.worker';
+import type { Block, ParseResult, PositionedItem } from '../lib/types';
 
 type Status =
   | { kind: 'idle' }
   | { kind: 'parsing' }
   | { kind: 'error'; message: string }
   | { kind: 'ready' };
+
+type RedetectStatus = { kind: 'idle' } | { kind: 'running' } | { kind: 'error'; message: string };
 
 // Ignore anything that isn't our own protocol — the dev/prod worker wrapper
 // can put its own unrelated messages on this same channel.
@@ -25,6 +40,11 @@ function isOurMessage(data: unknown): data is ParseWorkerResponse {
 export default function Home() {
   const [status, setStatus] = useState<Status>({ kind: 'idle' });
   const [doc, setDoc] = useState<DocState | null>(null);
+  // The positioned items from the last successful parse — kept around only
+  // so "re-detect with AI" (D-003) has something to resend; not otherwise
+  // used once blocks exist.
+  const [items, setItems] = useState<PositionedItem[] | null>(null);
+  const [redetectStatus, setRedetectStatus] = useState<RedetectStatus>({ kind: 'idle' });
 
   // Tracks the active worker + a generation counter so a second upload
   // started while the first is still parsing (a) terminates the stale
@@ -41,6 +61,8 @@ export default function Home() {
 
     setStatus({ kind: 'parsing' });
     setDoc(null);
+    setItems(null);
+    setRedetectStatus({ kind: 'idle' });
 
     try {
       const worker = new Worker(new URL('../lib/pdf/parse.worker.ts', import.meta.url));
@@ -69,6 +91,7 @@ export default function Home() {
           const response = event.data;
           if (response.type === 'success') {
             setDoc(initDoc(response.blocks));
+            setItems(response.items);
             setStatus({ kind: 'ready' });
           } else {
             setStatus({ kind: 'error', message: response.message });
@@ -108,6 +131,46 @@ export default function Home() {
     if (file) void handleFile(file);
   };
 
+  const handleAccept = useCallback((blockId: string, proposed: string, instruction: string) => {
+    setDoc((d) => (d ? applyEdit(d, blockId, proposed, instruction) : d));
+  }, []);
+
+  const handleReject = useCallback((blockId: string, proposed: string, instruction: string) => {
+    setDoc((d) => (d ? recordRejection(d, blockId, proposed, instruction) : d));
+  }, []);
+
+  const handleUndo = useCallback(() => {
+    setDoc((d) => (d ? undo(d) : d));
+  }, []);
+
+  const handleRedetect = useCallback(async () => {
+    if (!items) return;
+    setRedetectStatus({ kind: 'running' });
+    try {
+      const res = await fetch('/api/edit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRedetectStatus({ kind: 'error', message: data.error ?? 'Re-detect failed. Please try again.' });
+        return;
+      }
+      const result = data as ParseResult;
+      setDoc((d) => (d ? setBlocks(d, result.blocks) : d));
+      setRedetectStatus({ kind: 'idle' });
+    } catch {
+      setRedetectStatus({ kind: 'error', message: 'Re-detect failed. Please try again.' });
+    }
+  }, [items]);
+
+  const blocks = doc ? currentBlocks(doc) : [];
+  const history = doc ? appliedHistory(doc) : [];
+  // Re-detect is only available before the first edit (Flag A / D-016) — once
+  // history exists there's nothing to orphan-proof, so the button is gone.
+  const redetectAvailable = doc !== null && doc.history.length === 0;
+
   return (
     <main>
       <h1>AI Proposal Editor</h1>
@@ -122,7 +185,39 @@ export default function Home() {
           {status.message}
         </p>
       )}
-      {status.kind === 'ready' && doc && <DocumentView blocks={currentBlocks(doc)} />}
+
+      {status.kind === 'ready' && doc && (
+        <div className="editor-layout">
+          <div className="editor-main">
+            <div className="redetect-row">
+              <button
+                type="button"
+                onClick={handleRedetect}
+                disabled={!redetectAvailable || redetectStatus.kind === 'running'}
+                title={
+                  redetectAvailable
+                    ? 'Re-parse this document with AI'
+                    : 'Re-detect is only available before you start editing'
+                }
+              >
+                {redetectStatus.kind === 'running' ? 'Re-detecting…' : 'Re-detect sections with AI'}
+              </button>
+              {redetectStatus.kind === 'error' && (
+                <span role="alert" className="upload-error">
+                  {redetectStatus.message}
+                </span>
+              )}
+            </div>
+            <DocumentView
+              blocks={blocks}
+              renderParagraph={(block: Block) => (
+                <EditableParagraph block={block} onAccept={handleAccept} onReject={handleReject} />
+              )}
+            />
+          </div>
+          <HistoryPanel history={history} canUndo={canUndo(doc)} onUndo={handleUndo} />
+        </div>
+      )}
     </main>
   );
 }

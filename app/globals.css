@@ -15,7 +15,7 @@ body {
 }
 
 main {
-  max-width: 860px;
+  max-width: 1100px;
   margin: 0 auto;
   padding: 2rem 1.25rem;
 }
@@ -51,5 +51,144 @@ main {
 }
 
 .paragraph-block {
-  margin: 0 0 1rem;
+  margin: 0 0 0.35rem;
+}
+
+.editor-layout {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.editor-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.redetect-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.paragraph-container {
+  margin-bottom: 0.75rem;
+}
+
+.paragraph-slot {
+  position: relative;
+}
+
+.paragraph-slot .edit-trigger {
+  font-size: 0.8rem;
+  color: #666;
+  background: none;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+
+.paragraph-editing {
+  background: #f2f4f8;
+  border: 1px solid #dbe0ea;
+  border-radius: 8px;
+  padding: 0.75rem 0.9rem;
+}
+
+.edit-controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.edit-controls input[type='text'] {
+  flex: 1 1 auto;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.edit-controls button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #333;
+  border-radius: 4px;
+  background: #1a1a1a;
+  color: #fff;
+  cursor: pointer;
+}
+
+.edit-controls button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.diff-view {
+  font-size: 0.95rem;
+}
+
+.diff-text del {
+  color: #9a1c1c;
+  background: #fdecec;
+  text-decoration: line-through;
+}
+
+.diff-text ins {
+  color: #1a6e2e;
+  background: #e6f6ea;
+  text-decoration: none;
+}
+
+.diff-flags {
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.diff-flag {
+  color: #8a5a00;
+  background: #fff6e0;
+  border: 1px solid #f0deab;
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
+}
+
+.history-panel {
+  flex: 0 0 240px;
+  position: sticky;
+  top: 2rem;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 1rem;
+  background: #fff;
+}
+
+.history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.history-header h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.history-empty {
+  color: #777;
+  font-size: 0.85rem;
+}
+
+.history-list {
+  margin: 0;
+  padding-left: 1.1rem;
+  font-size: 0.85rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
 }
