@@ -189,6 +189,11 @@ main {
   font-size: 1rem;
 }
 
+.history-buttons {
+  display: flex;
+  gap: 0.4rem;
+}
+
 .history-empty {
   color: #777;
   font-size: 0.85rem;
@@ -201,4 +206,12 @@ main {
   display: flex;
   flex-direction: column;
   gap: 0.4rem;
+}
+
+.history-applied {
+  color: inherit;
+}
+
+.history-undone {
+  color: #aaa;
 }

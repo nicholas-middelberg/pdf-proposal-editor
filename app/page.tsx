@@ -5,12 +5,13 @@ import { DocumentView } from '../components/DocumentView';
 import { EditableParagraph } from '../components/EditableParagraph';
 import { HistoryPanel } from '../components/HistoryPanel';
 import {
-  appliedHistory,
   applyEdit,
+  canRedo,
   canUndo,
   currentBlocks,
   initDoc,
   recordRejection,
+  redo,
   setBlocks,
   undo,
   type DocState,
@@ -169,6 +170,30 @@ export default function Home() {
     setDoc((d) => (d ? undo(d) : d));
   }, []);
 
+  const handleRedo = useCallback(() => {
+    setDoc((d) => (d ? redo(d) : d));
+  }, []);
+
+  // Word-style keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z redo.
+  // Skipped while focus is in a text field so the instruction input's own
+  // native undo (while composing an instruction) isn't hijacked.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || e.key.toLowerCase() !== 'z') return;
+      e.preventDefault();
+      if (e.shiftKey) {
+        setDoc((d) => (d ? redo(d) : d));
+      } else {
+        setDoc((d) => (d ? undo(d) : d));
+      }
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
+
   const handleExport = useCallback(() => {
     if (!doc) return;
     const markdown = toMarkdown(currentBlocks(doc));
@@ -204,7 +229,6 @@ export default function Home() {
   }, [items]);
 
   const blocks = doc ? currentBlocks(doc) : [];
-  const history = doc ? appliedHistory(doc) : [];
   // Re-detect is only available before the first edit (Flag A / D-016) — once
   // history exists there's nothing to orphan-proof, so the button is gone.
   const redetectAvailable = doc !== null && doc.history.length === 0;
@@ -261,7 +285,14 @@ export default function Home() {
               )}
             />
           </div>
-          <HistoryPanel history={history} canUndo={canUndo(doc)} onUndo={handleUndo} />
+          <HistoryPanel
+            history={doc.history}
+            head={doc.head}
+            canUndo={canUndo(doc)}
+            canRedo={canRedo(doc)}
+            onUndo={handleUndo}
+            onRedo={handleRedo}
+          />
         </div>
       )}
     </main>
