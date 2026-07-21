@@ -15,6 +15,7 @@ import {
   undo,
   type DocState,
 } from '../lib/store';
+import { toMarkdown } from '../lib/export';
 import { loadDoc, saveDoc } from '../lib/persistence';
 import type { ParseWorkerRequest, ParseWorkerResponse } from '../lib/pdf/parse.worker';
 import type { Block, ParseResult, PositionedItem } from '../lib/types';
@@ -168,6 +169,18 @@ export default function Home() {
     setDoc((d) => (d ? undo(d) : d));
   }, []);
 
+  const handleExport = useCallback(() => {
+    if (!doc) return;
+    const markdown = toMarkdown(currentBlocks(doc));
+    const blob = new Blob([markdown], { type: 'text/markdown' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'proposal.md';
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [doc]);
+
   const handleRedetect = useCallback(async () => {
     if (!items) return;
     setRedetectStatus({ kind: 'running' });
@@ -237,6 +250,9 @@ export default function Home() {
                   {redetectStatus.message}
                 </span>
               )}
+              <button type="button" onClick={handleExport}>
+                Export as markdown
+              </button>
             </div>
             <DocumentView
               blocks={blocks}
