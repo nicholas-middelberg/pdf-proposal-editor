@@ -1,14 +1,21 @@
-// Offline fidelity eval (D-013 / Req 5, Task 10).
+// Fidelity eval (D-013 / Req 5, Task 10).
 //
 // Parses fixtures/easy.pdf, runs a fixed batch of FACT-NEUTRAL instructions
 // against every real paragraph, and diffs extracted facts before/after via
-// lib/facts/compare.ts — the exact same module (and the exact same edit call,
-// lib/ai.ts's proposeEdit) that /api/edit uses at runtime (D-012: one code
-// path for both). Because none of the instructions license a fact change, any
-// flag here is a genuine model fidelity leak, not a false alarm.
+// lib/facts/compare.ts. Because none of the instructions license a fact
+// change, any flag here is a genuine model fidelity leak, not a false alarm.
+//
+// Two targets, same instructions and same scoring:
+//   `npm run eval`           — calls lib/ai.ts's proposeEdit directly, then
+//                              scores locally with compareFacts. Same code
+//                              path /api/edit uses (D-012: one path for both).
+//   `npm run eval:deployed`  — POSTs to the DEPLOYED /api/edit and uses the
+//                              flags that server computed. Measures the
+//                              shipped product end to end, not a local
+//                              re-implementation of it.
 //
 // Makes REAL live API calls against the pinned model — NOT wired into
-// `npm test`. Run manually: `npm run eval`.
+// `npm test`.
 
 import { readFile } from 'node:fs/promises';
 import { extractPdfItems } from '../lib/pdf/extract';
@@ -19,12 +26,40 @@ import type { Block } from '../lib/types';
 
 const INSTRUCTIONS = ['Tighten this up.', 'Make this more formal.', 'Fix any grammar issues.'];
 
+/** Set to a deployment origin (no trailing slash) to score the shipped app. */
+const TARGET_URL = process.env.EVAL_TARGET_URL?.replace(/\/$/, '');
+
 type Result = {
   block: Block;
   instruction: string;
   edit: string;
   flags: FactFlag[];
 };
+
+/**
+ * One edit + its flags. Against the deployed target the flags come back from
+ * the server (that IS the production validator); locally they're computed
+ * with the same compareFacts the server would have run.
+ */
+async function runEdit(
+  block: Block,
+  instruction: string,
+): Promise<{ edit: string; flags: FactFlag[] }> {
+  if (TARGET_URL) {
+    const res = await fetch(`${TARGET_URL}/api/edit`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ blockId: block.id, text: block.text, instruction }),
+    });
+    if (!res.ok) {
+      throw new Error(`${res.status} ${(await res.text()).slice(0, 200)}`);
+    }
+    const data = (await res.json()) as { proposed: string; flags?: FactFlag[] };
+    return { edit: data.proposed, flags: data.flags ?? [] };
+  }
+  const edit = await proposeEdit(block.text, instruction);
+  return { edit, flags: compareFacts(block.text, edit, instruction) };
+}
 
 function hasSliceFlag(flags: FactFlag[], slice: 'numeric' | 'name'): boolean {
   return flags.some((f) => f.slice === slice);
@@ -46,17 +81,32 @@ async function main() {
   console.log(
     `Evaluating ${blocks.length} paragraphs x ${INSTRUCTIONS.length} instructions = ${totalCalls} edit calls against fixtures/easy.pdf...`,
   );
+  console.log(`Target: ${TARGET_URL ? `DEPLOYED ${TARGET_URL}/api/edit` : 'local proposeEdit()'}\n`);
 
   const results: Result[] = [];
+  // A transient failure partway through shouldn't discard a paid run — record
+  // it, keep going, and report the count alongside the rates.
+  const errors: { block: Block; instruction: string; message: string }[] = [];
+
   for (const block of blocks) {
     for (const instruction of INSTRUCTIONS) {
-      const edit = await proposeEdit(block.text, instruction);
-      const flags = compareFacts(block.text, edit, instruction);
-      results.push({ block, instruction, edit, flags });
-      process.stdout.write('.');
+      try {
+        const { edit, flags } = await runEdit(block, instruction);
+        results.push({ block, instruction, edit, flags });
+        process.stdout.write('.');
+      } catch (err) {
+        errors.push({ block, instruction, message: err instanceof Error ? err.message : String(err) });
+        process.stdout.write('x');
+      }
     }
   }
   console.log('\n');
+
+  if (errors.length) {
+    console.log(`=== ${errors.length} call(s) failed and are excluded from the rates ===`);
+    for (const e of errors.slice(0, 5)) console.log(`  "${e.instruction}" -> ${e.message}`);
+    console.log('');
+  }
 
   const numericLeaks = results.filter((r) => hasSliceFlag(r.flags, 'numeric')).length;
   const nameLeaks = results.filter((r) => hasSliceFlag(r.flags, 'name')).length;
