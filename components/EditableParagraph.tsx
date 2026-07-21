@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Block, EditProposal } from '../lib/types';
 import { ParagraphBlock } from './ParagraphBlock';
 import { DiffView } from './DiffView';
@@ -16,7 +16,7 @@ type EditState =
   | { kind: 'idle' }
   | { kind: 'selected' }
   | { kind: 'loading' }
-  | { kind: 'proposal'; proposed: string; flags: EditProposal['flags'] }
+  | { kind: 'proposal'; proposed: string; flags: EditProposal['flags']; baseline: string }
   | { kind: 'error'; message: string };
 
 /** Select a paragraph -> freeform instruction -> call /api/edit -> diff with
@@ -26,21 +26,47 @@ export function EditableParagraph({ block, onAccept, onReject }: EditableParagra
   const [state, setState] = useState<EditState>({ kind: 'idle' });
   const [instruction, setInstruction] = useState('');
 
+  // Mirrors the latest block.text on every render so an in-flight request
+  // can tell, once it resolves, whether the paragraph changed underneath it
+  // (e.g. an undo elsewhere reverted this block while the request was out).
+  const latestTextRef = useRef(block.text);
+  latestTextRef.current = block.text;
+
+  // If an open proposal's baseline no longer matches the block's current
+  // text, drop it. Its fact-flags were computed against the OLD baseline —
+  // accepting it would silently apply an edit that was never validated
+  // against what is now the immediate prior text (D-013/D-015).
+  useEffect(() => {
+    if (state.kind === 'proposal' && state.baseline !== block.text) {
+      setState({ kind: 'idle' });
+      setInstruction('');
+    }
+  }, [block.text, state]);
+
   async function submit() {
     if (!instruction.trim()) return;
+    const baseline = block.text;
     setState({ kind: 'loading' });
     try {
       const res = await fetch('/api/edit', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ blockId: block.id, text: block.text, instruction }),
+        body: JSON.stringify({ blockId: block.id, text: baseline, instruction }),
       });
       const data = await res.json();
       if (!res.ok) {
         setState({ kind: 'error', message: data.error ?? 'The AI edit failed. Please try again.' });
         return;
       }
-      setState({ kind: 'proposal', proposed: data.proposed, flags: data.flags ?? [] });
+      if (latestTextRef.current !== baseline) {
+        // Superseded while in flight — the response was validated against a
+        // baseline that's no longer current. Discard rather than show a
+        // proposal that could be accepted against the wrong prior text.
+        setState({ kind: 'idle' });
+        setInstruction('');
+        return;
+      }
+      setState({ kind: 'proposal', proposed: data.proposed, flags: data.flags ?? [], baseline });
     } catch {
       setState({ kind: 'error', message: 'The AI edit failed. Please try again.' });
     }
@@ -68,7 +94,7 @@ export function EditableParagraph({ block, onAccept, onReject }: EditableParagra
   if (state.kind === 'proposal') {
     return (
       <div className="paragraph-slot paragraph-editing">
-        <DiffView original={block.text} proposed={state.proposed} flags={state.flags} />
+        <DiffView original={state.baseline} proposed={state.proposed} flags={state.flags} />
         <div className="edit-controls">
           <button type="button" onClick={accept}>
             Accept
