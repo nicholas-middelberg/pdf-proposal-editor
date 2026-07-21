@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { DocumentView } from '../components/DocumentView';
 import { EditableParagraph } from '../components/EditableParagraph';
 import { HistoryPanel } from '../components/HistoryPanel';
@@ -15,6 +15,7 @@ import {
   undo,
   type DocState,
 } from '../lib/store';
+import { loadDoc, saveDoc } from '../lib/persistence';
 import type { ParseWorkerRequest, ParseWorkerResponse } from '../lib/pdf/parse.worker';
 import type { Block, ParseResult, PositionedItem } from '../lib/types';
 
@@ -45,6 +46,30 @@ export default function Home() {
   // used once blocks exist.
   const [items, setItems] = useState<PositionedItem[] | null>(null);
   const [redetectStatus, setRedetectStatus] = useState<RedetectStatus>({ kind: 'idle' });
+  // Non-fatal — the in-memory document keeps working either way; this only
+  // warns that a refresh right now could lose work (D-006 silent-failure #4).
+  const [persistWarning, setPersistWarning] = useState<string | null>(null);
+
+  // Restore a persisted document on mount (DoD: survives a refresh). Done in
+  // an effect, not a lazy useState initializer, so the server-rendered and
+  // first-client-render markup match (avoids a hydration mismatch) — the
+  // cost is one harmless render with the upload prompt before this fires.
+  useEffect(() => {
+    const persisted = loadDoc();
+    if (persisted) {
+      setDoc(persisted.doc);
+      setItems(persisted.items);
+      setStatus({ kind: 'ready' });
+    }
+  }, []);
+
+  // Persist on every doc/items change — uploads, accept/reject, undo, and
+  // re-detect all flow through here via setDoc/setItems.
+  useEffect(() => {
+    if (!doc || !items) return;
+    const result = saveDoc(doc, items);
+    setPersistWarning(result.ok ? null : result.error);
+  }, [doc, items]);
 
   // Tracks the active worker + a generation counter so a second upload
   // started while the first is still parsing (a) terminates the stale
@@ -189,6 +214,11 @@ export default function Home() {
       {status.kind === 'ready' && doc && (
         <div className="editor-layout">
           <div className="editor-main">
+            {persistWarning && (
+              <p role="alert" className="persist-warning">
+                {persistWarning}
+              </p>
+            )}
             <div className="redetect-row">
               <button
                 type="button"

@@ -157,6 +157,16 @@ main {
   font-size: 0.85rem;
 }
 
+.persist-warning {
+  color: #8a5a00;
+  background: #fff6e0;
+  border: 1px solid #f0deab;
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+  font-size: 0.85rem;
+}
+
 .history-panel {
   flex: 0 0 240px;
   position: sticky;
