@@ -23,9 +23,7 @@ class FakeStorage {
 
   setItem(key: string, value: string): void {
     if (this.quota !== null && value.length > this.quota) {
-      const err = new Error('Quota exceeded');
-      err.name = 'QuotaExceededError';
-      throw err;
+      throw new DOMException('Quota exceeded', 'QuotaExceededError');
     }
     this.data.set(key, value);
   }
@@ -99,6 +97,55 @@ describe('loadDoc — absent or invalid data never throws, just returns null', (
   });
 });
 
+describe('loadDoc — deep validation catches malformed-but-parseable payloads', () => {
+  // A shallow shape check (Array.isArray/typeof only) would admit these and
+  // let them crash later inside lib/store.ts / DocumentView on render — a
+  // poisoned payload that then re-crashes on every subsequent refresh.
+  const base = () => ({ version: 1, doc: initDoc(blocks()), items: [] as unknown[] });
+
+  it('rejects a block missing required fields', () => {
+    const payload = base();
+    (payload.doc.blocks as unknown[])[0] = { id: 'a' }; // missing type/text/page/bbox
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).toBeNull();
+  });
+
+  it('rejects a non-object block element', () => {
+    const payload = base();
+    (payload.doc.blocks as unknown[])[0] = null;
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).toBeNull();
+  });
+
+  it('rejects head out of bounds (would index history[head] unchecked)', () => {
+    const payload = base();
+    payload.doc.head = 5; // history is empty
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).toBeNull();
+  });
+
+  it('rejects a malformed history entry', () => {
+    const payload = base();
+    payload.doc.history = [{ blockId: 'a' }] as never; // missing from/to/instruction/at
+    payload.doc.head = 0;
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).toBeNull();
+  });
+
+  it('rejects a malformed positioned item', () => {
+    const payload = base();
+    payload.items = [{ text: 'x' }]; // missing x/y/page/bbox
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).toBeNull();
+  });
+
+  it('accepts a fully well-formed payload', () => {
+    const payload = base();
+    localStorage.setItem('pdf-proposal-editor:v1', JSON.stringify(payload));
+    expect(loadDoc()).not.toBeNull();
+  });
+});
+
 describe('saveDoc — quota failure surfaces a warning, never throws (silent-failure risk #4)', () => {
   it('returns ok:false with a message instead of throwing', () => {
     fakeStorage.setQuota(10); // tiny, guaranteed to be exceeded
@@ -114,6 +161,24 @@ describe('saveDoc — quota failure surfaces a warning, never throws (silent-fai
     fakeStorage.setQuota(1);
     saveDoc(initDoc([]), []); // fails, should not corrupt what's already stored
     expect(loadDoc()!.doc).toEqual(doc);
+  });
+
+  it('reports a quota-specific message for a real QuotaExceededError', () => {
+    fakeStorage.setQuota(10);
+    const result = saveDoc(initDoc(blocks()), []);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/storage limit reached/i);
+  });
+
+  it('reports a generic (non-quota) message for a different storage failure', () => {
+    vi.stubGlobal('localStorage', {
+      setItem: () => {
+        throw new Error('storage disabled'); // not a DOMException/QuotaExceededError
+      },
+    });
+    const result = saveDoc(initDoc(blocks()), []);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).not.toMatch(/storage limit reached/i);
   });
 });
 
