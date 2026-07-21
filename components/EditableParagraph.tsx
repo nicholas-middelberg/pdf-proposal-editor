@@ -8,6 +8,10 @@ import { DiffView } from './DiffView';
 type EditableParagraphProps = {
   /** Current (composed) block — block.text is the baseline for this edit. */
   block: Block;
+  /** Nearest preceding heading's text (lib/blockLabels.ts), or null. */
+  heading: string | null;
+  /** Running position among paragraphs in the whole document. */
+  index: number;
   onAccept: (blockId: string, proposed: string, instruction: string) => void;
   onReject: (blockId: string, proposed: string, instruction: string) => void;
 };
@@ -21,10 +25,19 @@ type EditState =
 
 /** Select a paragraph -> freeform instruction -> call /api/edit -> diff with
  * fact-flags -> accept/reject (D-012). AI failure surfaces inline; the
- * paragraph itself is never mutated except through an explicit accept. */
-export function EditableParagraph({ block, onAccept, onReject }: EditableParagraphProps) {
+ * paragraph itself is never mutated except through an explicit accept. The
+ * block-label (heading + index) stays visible across every state — only the
+ * body/editor/review "slot" underneath it switches (visual redesign). */
+export function EditableParagraph({
+  block,
+  heading,
+  index,
+  onAccept,
+  onReject,
+}: EditableParagraphProps) {
   const [state, setState] = useState<EditState>({ kind: 'idle' });
   const [instruction, setInstruction] = useState('');
+  const [flash, setFlash] = useState(false);
 
   // Mirrors the latest block.text on every render so an in-flight request
   // can tell, once it resolves, whether the paragraph changed underneath it
@@ -77,6 +90,8 @@ export function EditableParagraph({ block, onAccept, onReject }: EditableParagra
     onAccept(block.id, state.proposed, instruction);
     setState({ kind: 'idle' });
     setInstruction('');
+    setFlash(true);
+    setTimeout(() => setFlash(false), 1600);
   }
 
   function reject() {
@@ -91,57 +106,157 @@ export function EditableParagraph({ block, onAccept, onReject }: EditableParagra
     setInstruction('');
   }
 
-  if (state.kind === 'proposal') {
-    return (
-      <div className="paragraph-slot paragraph-editing">
-        <DiffView original={state.baseline} proposed={state.proposed} flags={state.flags} />
-        <div className="edit-controls">
-          <button type="button" onClick={accept}>
-            Accept
-          </button>
-          <button type="button" onClick={reject}>
-            Reject
+  const blockLabel = (
+    <p className="block-label">
+      <span className="idx">{String(index).padStart(2, '0')}</span>
+      {heading}
+    </p>
+  );
+
+  return (
+    <article className={`block${flash ? ' flash-ok' : ''}`}>
+      {state.kind === 'idle' && (
+        <div className="block-tools">
+          <button
+            type="button"
+            className="edit-btn"
+            aria-label="Edit this section"
+            onClick={() => setState({ kind: 'selected' })}
+          >
+            <svg
+              width="12"
+              height="12"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="m16.5 3.5 4 4L7 21l-4 1 1-4Z" />
+            </svg>
+            Edit
           </button>
         </div>
-      </div>
-    );
-  }
-
-  if (state.kind === 'idle') {
-    return (
-      <div className="paragraph-slot">
-        <ParagraphBlock block={block} />
-        <button type="button" className="edit-trigger" onClick={() => setState({ kind: 'selected' })}>
-          Edit
-        </button>
-      </div>
-    );
-  }
-
-  const loading = state.kind === 'loading';
-  return (
-    <div className="paragraph-slot paragraph-editing">
-      <ParagraphBlock block={block} />
-      <div className="edit-controls">
-        <input
-          type="text"
-          value={instruction}
-          onChange={(e) => setInstruction(e.target.value)}
-          placeholder="e.g. tighten this, fix the client name to..."
-          disabled={loading}
-        />
-        <button type="button" onClick={submit} disabled={loading || !instruction.trim()}>
-          {loading ? 'Editing…' : 'Ask AI'}
-        </button>
-        <button type="button" onClick={cancel} disabled={loading}>
-          Cancel
-        </button>
-      </div>
-      {state.kind === 'error' && (
-        <p role="alert" className="upload-error">
-          {state.message}
-        </p>
       )}
-    </div>
+      {blockLabel}
+
+      {state.kind === 'idle' && <ParagraphBlock block={block} />}
+
+      {state.kind === 'selected' && (
+        <div className="editor">
+          <p className="block-body">{block.text}</p>
+          <div className="promptrow">
+            <label className="promptbox">
+              <span className="spark" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2z" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+                placeholder="Tell the assistant what to change…"
+                autoComplete="off"
+                autoFocus
+              />
+            </label>
+            <div className="editor-actions">
+              <button
+                type="button"
+                className="btn btn--accent"
+                onClick={submit}
+                disabled={!instruction.trim()}
+              >
+                Ask AI
+              </button>
+              <button type="button" className="btn btn--ghost" onClick={cancel}>
+                Cancel
+              </button>
+            </div>
+          </div>
+          <p className="hintline">
+            Edits arrive as a redline you approve. <span className="kbd">⏎</span> to run
+          </p>
+        </div>
+      )}
+
+      {state.kind === 'loading' && (
+        <div className="editor">
+          <p className="block-body" style={{ opacity: 0.5 }}>
+            {block.text}
+          </p>
+          <div className="thinking">
+            <span className="dots">
+              <i></i>
+              <i></i>
+              <i></i>
+            </span>
+            Drafting a redline · checking proper nouns
+          </div>
+        </div>
+      )}
+
+      {state.kind === 'error' && (
+        <div className="editor">
+          <p className="block-body">{block.text}</p>
+          <div className="promptrow">
+            <label className="promptbox">
+              <span className="spark" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2l1.6 5.4L19 9l-5.4 1.6L12 16l-1.6-5.4L5 9l5.4-1.6L12 2z" />
+                </svg>
+              </span>
+              <input
+                type="text"
+                value={instruction}
+                onChange={(e) => setInstruction(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    submit();
+                  }
+                }}
+                placeholder="Tell the assistant what to change…"
+                autoComplete="off"
+              />
+            </label>
+            <div className="editor-actions">
+              <button
+                type="button"
+                className="btn btn--accent"
+                onClick={submit}
+                disabled={!instruction.trim()}
+              >
+                Ask AI
+              </button>
+              <button type="button" className="btn btn--ghost" onClick={cancel}>
+                Cancel
+              </button>
+            </div>
+          </div>
+          <p role="alert" className="upload-error">
+            {state.message}
+          </p>
+        </div>
+      )}
+
+      {state.kind === 'proposal' && (
+        <DiffView
+          original={state.baseline}
+          proposed={state.proposed}
+          flags={state.flags}
+          onAccept={accept}
+          onReject={reject}
+        />
+      )}
+    </article>
   );
 }
