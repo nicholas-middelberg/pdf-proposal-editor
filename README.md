@@ -119,9 +119,11 @@ also gated to before the first edit (D-016), which removes the entire class of
 ### UX
 
 **The paragraph is the editable unit; headings are navigation only (D-002).**
-The brief's "section by section" is ambiguous between the two. One granularity
-means one selection model, one diff model, one history model — two would mean
-competing state. The cost is no "rewrite this whole section" action.
+The brief asks for "a paragraph (or whatever unit you decide is right)" while
+framing the task as editing "section by section," so the unit was an explicit
+choice. One granularity means one selection model, one diff model, one history
+model — two would mean competing state. The cost is no "rewrite this whole
+section" action, which I judged less valuable than a coherent state machine.
 
 **History is a pointer, not a stack.** `history` is an append-only array plus a
 `head` index. Undo moves `head` left; **the entry is never deleted**, so it stays
@@ -340,15 +342,100 @@ sufficient for "this is a good edit."
 
 ## 6. What I added beyond the brief and why
 
-> **⚠️ This section is not written yet — I'm waiting on the original brief text.**
->
-> Every other section is complete. I deliberately did not draft this one,
-> because it depends entirely on knowing which features the brief *required*
-> versus which were additions, and guessing at that line would defeat the point
-> of the section. Candidates I believe may be additions — but cannot confirm
-> without the brief — include the deterministic fact-preservation validator,
-> "re-detect sections with AI," undo/redo with keyboard shortcuts, and the
-> visual redesign.
+The brief's loop — upload, interact, select a unit, instruct, review the
+proposed change, compose, undo — is the minimum bar, and it closes end-to-end on
+the deployed app. Everything below is on top of that. The brief also warns that
+two thoughtful additions beat ten half-finished ones, so I made **two
+substantial ones** and kept the rest deliberately small.
+
+### Addition 1: the fact-preservation guardrail — the thing I'd defend hardest
+
+Nothing in the brief asks for this. I built it because of what the document
+*is*: a construction bid. If the AI quietly changes a dollar figure while
+"tightening" a paragraph, that isn't a typo — it's a mispriced bid. A changed
+date is a missed deadline. A changed client name is a document that's legally
+about the wrong party. And critically, **this failure is invisible by default**:
+the output reads beautifully, which is exactly what makes an LLM editor
+dangerous on this class of document rather than merely imperfect.
+
+The brief's own example instructions sit right next to the risk. *"Fix this
+paragraph"* and *"rewrite this in our voice"* license tone changes and nothing
+else — but they hand the model an unconstrained rewrite of text containing bid
+numbers.
+
+So after every edit, the server extracts numbers, dates, dollar amounts, and
+names from both the baseline and the result, and flags any change the
+instruction didn't license. Three judgment calls shaped it:
+
+- **Flag, never auto-fix.** Silently repairing a suspect change would reintroduce
+  the same trust problem one layer down. The human decides what lands in a bid.
+- **Over-warn on purpose.** "Licensed" isn't a bare diff — real edits do change
+  facts. When it's ambiguous, I flag. A false positive costs a glance; a false
+  negative is the whole failure mode.
+- **Report numeric and name fidelity separately, never blended.** Numeric
+  extraction is near-perfect; name extraction is weak. Averaging them would
+  launder a weak signal into a confident-looking one.
+
+It isn't decoration: §5 shows it catching a real failure on the deployed app,
+where the model returned chatbot filler in place of a proposal line and the
+guard caught it by noticing every fact had vanished. That single catch is the
+best argument for the feature existing.
+
+### Addition 2: two paths to document structure, with the AI constrained
+
+The brief flags structure recovery as "itself a real engineering problem" and
+asks how I'd approach it. My answer is that neither available approach is good
+enough alone, so I shipped both.
+
+The deterministic parser (font-size jumps, numbering, all-caps, whitespace gaps)
+is fast, free, inspectable, and unit-tested against the real fixture — the right
+default. But it will be wrong on layouts it wasn't tuned for. The escape hatch is
+a **user-triggered** "re-detect sections with AI" button.
+
+The interesting part is what that button *can't* do. I originally considered
+sending the model the text and asking for corrected sections. That would let a
+language model author text that then lands in a legal document. Instead it
+receives positioned items and returns **only groupings** — indices into text the
+server already has — and the server rebuilds the blocks from the original items.
+A bad response can misgroup or misorder; it **structurally cannot invent
+content.** Same instinct as Addition 1: constrain where the model has authority.
+
+Two things fell out of building it that I'd have missed by reasoning alone: the
+model sometimes skips item indices, which I initially treated as corruption and
+rejected outright — losing the user's whole re-detect over a few stray items. It
+now **salvages** the gaps as standalone paragraphs, because never silently
+dropping text outranks clean grouping. And it made re-detect user-triggered
+rather than automatic, which sidesteps an invisible "did this parse cleanly
+enough?" threshold I'd have spent the whole budget tuning.
+
+### Smaller additions
+
+- **Redo and keyboard shortcuts.** The brief says "undo if possible." Because I
+  modelled history as an array plus a pointer rather than a pop-stack from the
+  start, undone edits are never destroyed — so redo was a UI change, not a
+  migration. Undo without redo is a trap in an editor: it punishes exploring.
+- **Survives a refresh.** Not mentioned in the brief, but losing an afternoon of
+  accepted edits to an accidental reload is the kind of thing that makes someone
+  stop trusting a tool. Quota failures warn rather than failing silently.
+- **A repeatable eval harness, not a one-off measurement.** `npm run
+  eval:deployed` scores the live app on demand, so fidelity is something you can
+  re-check after any prompt or model change rather than a number that was true
+  once.
+- **Visual design.** The brief names polish as something it notices. Beyond
+  looking cared-for, the palette does work: one accent reserved for *invoking
+  AI*, ink for commit, outline for dismiss, and warning colors confined to the
+  redline and its guardrails — so if you see amber, something needs judgment.
+
+### What I deliberately did not add
+
+**Knowledge-base grounding**, even though the brief names it as an example
+instruction ("add information from a knowledge base"). It's the one listed
+capability I skipped, and that was a scope judgment: done properly it's ingest,
+chunking, retrieval, and a UI for choosing sources — a second product. Done in
+the time I had, it would have been exactly the half-finished tenth feature the
+brief warns against, and it would have come out of the fact-guardrail's budget.
+It's in §7, where I also explain why it needs no retrieval stack when it does
+get built.
 
 ---
 
