@@ -22,6 +22,7 @@ import { extractPdfItems } from '../lib/pdf/extract';
 import { segment } from '../lib/pdf/segment';
 import { proposeEdit } from '../lib/ai';
 import { compareFacts, type FactFlag } from '../lib/facts/compare';
+import { nonEditReason } from '../lib/nonEdit';
 import type { Block } from '../lib/types';
 
 const INSTRUCTIONS = ['Tighten this up.', 'Make this more formal.', 'Fix any grammar issues.'];
@@ -58,6 +59,10 @@ async function runEdit(
     return { edit: data.proposed, flags: data.flags ?? [] };
   }
   const edit = await proposeEdit(block.text, instruction);
+  // Mirror the route's own non-edit guard so the local path reports the same
+  // outcome the deployed one would (which returns 502 for these).
+  const nonEdit = nonEditReason(block.text, edit);
+  if (nonEdit) throw new Error(`non-edit guard: ${nonEdit}`);
   return { edit, flags: compareFacts(block.text, edit, instruction) };
 }
 
@@ -102,9 +107,24 @@ async function main() {
   }
   console.log('\n');
 
-  if (errors.length) {
-    console.log(`=== ${errors.length} call(s) failed and are excluded from the rates ===`);
-    for (const e of errors.slice(0, 5)) console.log(`  "${e.instruction}" -> ${e.message}`);
+  // A guard rejection is a SUCCESS of the product (the model misbehaved and
+  // was caught before the user saw it), not an infrastructure failure — so
+  // report the two separately instead of burying both as "errors".
+  const guardRejections = errors.filter((e) => /non-edit|replied instead of editing/i.test(e.message));
+  const otherErrors = errors.filter((e) => !guardRejections.includes(e));
+
+  if (guardRejections.length) {
+    console.log(
+      `=== ${guardRejections.length} response(s) refused by the non-edit guard (model replied instead of editing) ===`,
+    );
+    for (const e of guardRejections) {
+      console.log(`  "${e.instruction}" on: ${e.block.text.slice(0, 70)}`);
+    }
+    console.log('');
+  }
+  if (otherErrors.length) {
+    console.log(`=== ${otherErrors.length} call(s) failed for other reasons ===`);
+    for (const e of otherErrors.slice(0, 5)) console.log(`  "${e.instruction}" -> ${e.message}`);
     console.log('');
   }
 

@@ -10,6 +10,7 @@ import { NextResponse } from 'next/server';
 import { getAnthropicClient, EDIT_MODEL, proposeEdit } from '../../../lib/ai';
 import { compareFacts } from '../../../lib/facts/compare';
 import { paragraphLengthError } from '../../../lib/limits';
+import { nonEditReason } from '../../../lib/nonEdit';
 import { dedupe } from '../../../lib/pdf/segment';
 import { reconstructBlocks } from '../../../lib/pdf/reconstruct';
 import type { EditProposal, EditRequest, ParseResult, PositionedItem } from '../../../lib/types';
@@ -60,6 +61,24 @@ async function handleEdit({ blockId, text, instruction }: EditRequest) {
   if (!proposed) {
     return NextResponse.json(
       { error: 'The AI returned an empty response. Please try again.' },
+      { status: 502 },
+    );
+  }
+
+  // The model sometimes replies ABOUT the task instead of doing it (observed
+  // live: a short date/project-number line came back as "Please provide the
+  // paragraph you'd like me to tighten up."). That is not a bad edit for the
+  // user to judge — it is a non-answer, so it is refused here rather than
+  // rendered as an accept-able proposal. See lib/nonEdit.ts.
+  const nonEdit = nonEditReason(text, proposed);
+  if (nonEdit) {
+    console.error(
+      'POST /api/edit: response rejected as a non-edit —', nonEdit,
+      '| instruction:', JSON.stringify(instruction),
+      '| response (first 300 chars):', proposed.slice(0, 300),
+    );
+    return NextResponse.json(
+      { error: 'The AI replied instead of editing the paragraph. Please try again.' },
       { status: 502 },
     );
   }
