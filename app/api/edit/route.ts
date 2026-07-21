@@ -11,6 +11,7 @@ import { getAnthropicClient, EDIT_MODEL } from '../../../lib/ai';
 import { compareFacts } from '../../../lib/facts/compare';
 import { paragraphLengthError } from '../../../lib/limits';
 import { assignBlockIds } from '../../../lib/id';
+import { dedupe } from '../../../lib/pdf/segment';
 import type {
   BBox,
   Block,
@@ -20,6 +21,13 @@ import type {
   ParseResult,
   PositionedItem,
 } from '../../../lib/types';
+
+// Re-detect on a full document (hundreds of items) has been observed to take
+// well over a minute end to end, well past Vercel's default serverless
+// timeout. Extends the allowed execution time for this route on deploy —
+// verify against the actual Vercel plan at deploy time (Task 11), the real
+// ceiling varies by plan.
+export const maxDuration = 120;
 
 // Fixes the role, forbids changing facts unless instructed, and asks for the
 // revised paragraph only — no preamble, so the diff stays clean (D-012).
@@ -156,10 +164,18 @@ function reconstructBlocks(items: PositionedItem[], groups: unknown): Block[] | 
   return assignBlockIds(raw);
 }
 
-async function handleRedetect({ items }: RedetectRequest) {
-  if (items.length === 0) {
+async function handleRedetect({ items: rawItems }: RedetectRequest) {
+  if (rawItems.length === 0) {
     return NextResponse.json({ error: 'Nothing to re-detect.' }, { status: 400 });
   }
+
+  // Same de-duplication the deterministic path uses (segment.ts): pdf.js
+  // sometimes emits the identical glyph run twice (bold/shadow rendering).
+  // Without this the model sees doubled text and often groups the
+  // duplicates together, producing headings like "Statement of Statement of
+  // Qualifications Qualifications". itemIndices below refer to this
+  // deduped array, not the original request payload.
+  const items = dedupe(rawItems);
 
   // Trim to what the model actually needs (D-003) — not bbox/fontSize.
   const payload = items.map((it, i) => ({
@@ -175,10 +191,19 @@ async function handleRedetect({ items }: RedetectRequest) {
     const client = getAnthropicClient();
     const response = await client.messages.create({
       model: EDIT_MODEL,
-      max_tokens: 8192,
+      max_tokens: 16384,
       system: REDETECT_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(payload) }],
     });
+    if (response.stop_reason === 'max_tokens') {
+      console.error(
+        `POST /api/edit (redetect): response truncated at max_tokens (${items.length} items)`,
+      );
+      return NextResponse.json(
+        { error: 'Re-detect ran out of space for this document. Please try again.' },
+        { status: 502 },
+      );
+    }
     const block = response.content.find((b) => b.type === 'text');
     raw = block?.type === 'text' ? block.text.trim() : '';
   } catch (err) {
@@ -189,7 +214,12 @@ async function handleRedetect({ items }: RedetectRequest) {
   let groups: unknown;
   try {
     groups = JSON.parse(stripCodeFence(raw));
-  } catch {
+  } catch (err) {
+    console.error(
+      'POST /api/edit (redetect): could not parse model response as JSON.',
+      'error:', err,
+      'raw response (first 4000 chars):', raw.slice(0, 4000),
+    );
     return NextResponse.json(
       { error: 'Re-detect returned an unreadable response. Please try again.' },
       { status: 502 },
@@ -198,6 +228,11 @@ async function handleRedetect({ items }: RedetectRequest) {
 
   const blocks = reconstructBlocks(items, groups);
   if (!blocks) {
+    console.error(
+      'POST /api/edit (redetect): model response failed validation (bad/incomplete grouping).',
+      'itemCount:', items.length,
+      'groups (first 4000 chars):', JSON.stringify(groups).slice(0, 4000),
+    );
     return NextResponse.json(
       { error: 'Re-detect returned an invalid section layout. Please try again.' },
       { status: 502 },

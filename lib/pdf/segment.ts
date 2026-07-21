@@ -36,7 +36,7 @@ const MAX_HEADING_CHARS = 70;
  * item whose (page, text) matches a previously accepted one within
  * DEDUPE_BUCKET points on both axes.
  */
-function dedupe(items: PositionedItem[]): PositionedItem[] {
+export function dedupe(items: PositionedItem[]): PositionedItem[] {
   const out: PositionedItem[] = [];
   const accepted = new Map<string, PositionedItem[]>();
   for (const it of items) {
