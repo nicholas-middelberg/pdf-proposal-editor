@@ -10,17 +10,9 @@ import { NextResponse } from 'next/server';
 import { getAnthropicClient, EDIT_MODEL } from '../../../lib/ai';
 import { compareFacts } from '../../../lib/facts/compare';
 import { paragraphLengthError } from '../../../lib/limits';
-import { assignBlockIds } from '../../../lib/id';
 import { dedupe } from '../../../lib/pdf/segment';
-import type {
-  BBox,
-  Block,
-  BlockType,
-  EditProposal,
-  EditRequest,
-  ParseResult,
-  PositionedItem,
-} from '../../../lib/types';
+import { reconstructBlocks } from '../../../lib/pdf/reconstruct';
+import type { EditProposal, EditRequest, ParseResult, PositionedItem } from '../../../lib/types';
 
 // Re-detect on a full document (hundreds of items) has been observed to take
 // well over a minute end to end, well past Vercel's default serverless
@@ -117,53 +109,6 @@ function stripCodeFence(text: string): string {
   return (match ? match[1] : text).trim();
 }
 
-type RedetectGroup = { type: unknown; itemIndices: unknown };
-
-/** Rebuilds Block[] from the model's groupings. Returns null if the response
- * doesn't validate — every item must be covered exactly once. */
-function reconstructBlocks(items: PositionedItem[], groups: unknown): Block[] | null {
-  if (!Array.isArray(groups) || groups.length === 0) return null;
-
-  const seen = new Set<number>();
-  const raw: { type: BlockType; text: string; page: number; bbox: BBox }[] = [];
-
-  for (const g of groups as RedetectGroup[]) {
-    if (!g || typeof g !== 'object') return null;
-    const { type, itemIndices } = g;
-    if (type !== 'heading' && type !== 'paragraph') return null;
-    if (!Array.isArray(itemIndices) || itemIndices.length === 0) return null;
-
-    const groupItems: PositionedItem[] = [];
-    for (const idx of itemIndices) {
-      if (!Number.isInteger(idx) || idx < 0 || idx >= items.length || seen.has(idx)) return null;
-      seen.add(idx);
-      groupItems.push(items[idx]);
-    }
-
-    const text = groupItems
-      .map((it) => it.text)
-      .join(' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-    if (!text) return null;
-
-    const bbox = groupItems.reduce<BBox>(
-      (acc, it) => [
-        Math.min(acc[0], it.bbox[0]),
-        Math.min(acc[1], it.bbox[1]),
-        Math.max(acc[2], it.bbox[2]),
-        Math.max(acc[3], it.bbox[3]),
-      ],
-      groupItems[0].bbox,
-    );
-    raw.push({ type, text, page: groupItems[0].page, bbox });
-  }
-
-  if (seen.size !== items.length) return null; // every item must be used exactly once
-
-  return assignBlockIds(raw);
-}
-
 async function handleRedetect({ items: rawItems }: RedetectRequest) {
   if (rawItems.length === 0) {
     return NextResponse.json({ error: 'Nothing to re-detect.' }, { status: 400 });
@@ -191,7 +136,7 @@ async function handleRedetect({ items: rawItems }: RedetectRequest) {
     const client = getAnthropicClient();
     const response = await client.messages.create({
       model: EDIT_MODEL,
-      max_tokens: 16384,
+      max_tokens: 32000,
       system: REDETECT_SYSTEM_PROMPT,
       messages: [{ role: 'user', content: JSON.stringify(payload) }],
     });
