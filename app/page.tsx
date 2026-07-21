@@ -19,7 +19,7 @@ import {
 import { toMarkdown } from '../lib/export';
 import { loadDoc, saveDoc } from '../lib/persistence';
 import type { ParseWorkerRequest, ParseWorkerResponse } from '../lib/pdf/parse.worker';
-import type { Block, ParseResult, PositionedItem } from '../lib/types';
+import type { ParseResult, PositionedItem } from '../lib/types';
 
 type Status =
   | { kind: 'idle' }
@@ -51,6 +51,21 @@ export default function Home() {
   // Non-fatal — the in-memory document keeps working either way; this only
   // warns that a refresh right now could lose work (D-006 silent-failure #4).
   const [persistWarning, setPersistWarning] = useState<string | null>(null);
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false);
+
+  // Toast queue (visual redesign) — purely a notification layer over the
+  // existing accept/reject/undo/redo/export/redetect actions, doesn't touch
+  // their logic. Message text is kept even while hidden so the fade-out
+  // transition doesn't flash empty content.
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+  const [toastVisible, setToastVisible] = useState(false);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = useCallback((message: string) => {
+    setToastMsg(message);
+    setToastVisible(true);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastVisible(false), 2200);
+  }, []);
 
   // Restore a persisted document on mount (DoD: survives a refresh). Done in
   // an effect, not a lazy useState initializer, so the server-rendered and
@@ -78,6 +93,7 @@ export default function Home() {
   // worker and (b) can never have its late response clobber newer state.
   const workerRef = useRef<Worker | null>(null);
   const generationRef = useRef(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Parsing runs in a Web Worker (D-011) — the file's bytes never leave the
   // browser, there is no /api/parse.
@@ -158,41 +174,56 @@ export default function Home() {
     if (file) void handleFile(file);
   };
 
-  const handleAccept = useCallback((blockId: string, proposed: string, instruction: string) => {
-    setDoc((d) => (d ? applyEdit(d, blockId, proposed, instruction) : d));
-  }, []);
+  const handleAccept = useCallback(
+    (blockId: string, proposed: string, instruction: string) => {
+      setDoc((d) => (d ? applyEdit(d, blockId, proposed, instruction) : d));
+      showToast('Redline accepted');
+    },
+    [showToast],
+  );
 
-  const handleReject = useCallback((blockId: string, proposed: string, instruction: string) => {
-    setDoc((d) => (d ? recordRejection(d, blockId, proposed, instruction) : d));
-  }, []);
+  const handleReject = useCallback(
+    (blockId: string, proposed: string, instruction: string) => {
+      setDoc((d) => (d ? recordRejection(d, blockId, proposed, instruction) : d));
+      showToast('Redline rejected · nothing changed');
+    },
+    [showToast],
+  );
 
   const handleUndo = useCallback(() => {
     setDoc((d) => (d ? undo(d) : d));
-  }, []);
+    showToast('Reverted');
+  }, [showToast]);
 
   const handleRedo = useCallback(() => {
     setDoc((d) => (d ? redo(d) : d));
-  }, []);
+    showToast('Reapplied');
+  }, [showToast]);
 
-  // Word-style keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z redo.
-  // Skipped while focus is in a text field so the instruction input's own
-  // native undo (while composing an instruction) isn't hijacked.
+  // Word-style keyboard shortcuts: Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z redo,
+  // Esc closes the history drawer. Undo/redo shortcuts are skipped while
+  // focus is in a text field so the instruction input's own native undo
+  // (while composing an instruction) isn't hijacked.
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape' && isHistoryOpen) {
+        setIsHistoryOpen(false);
+        return;
+      }
       const target = e.target as HTMLElement | null;
       if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
       const mod = e.metaKey || e.ctrlKey;
       if (!mod || e.key.toLowerCase() !== 'z') return;
       e.preventDefault();
       if (e.shiftKey) {
-        setDoc((d) => (d ? redo(d) : d));
+        handleRedo();
       } else {
-        setDoc((d) => (d ? undo(d) : d));
+        handleUndo();
       }
     }
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+  }, [isHistoryOpen, handleUndo, handleRedo]);
 
   const handleExport = useCallback(() => {
     if (!doc) return;
@@ -204,7 +235,8 @@ export default function Home() {
     a.download = 'proposal.md';
     a.click();
     URL.revokeObjectURL(url);
-  }, [doc]);
+    showToast('Exported proposal.md');
+  }, [doc, showToast]);
 
   const handleRedetect = useCallback(async () => {
     if (!items) return;
@@ -223,78 +255,176 @@ export default function Home() {
       const result = data as ParseResult;
       setDoc((d) => (d ? setBlocks(d, result.blocks) : d));
       setRedetectStatus({ kind: 'idle' });
+      showToast('Sections re-detected');
     } catch {
       setRedetectStatus({ kind: 'error', message: 'Re-detect failed. Please try again.' });
     }
-  }, [items]);
+  }, [items, showToast]);
 
   const blocks = doc ? currentBlocks(doc) : [];
   // Re-detect is only available before the first edit (Flag A / D-016) — once
   // history exists there's nothing to orphan-proof, so the button is gone.
   const redetectAvailable = doc !== null && doc.history.length === 0;
+  const revisionCount = doc ? doc.head + 1 : 0;
+  const showUploadView = status.kind !== 'ready' || !doc;
 
   return (
-    <main>
-      <h1>AI Proposal Editor</h1>
-      <label className="upload-control">
-        <span>Upload a construction proposal PDF to begin.</span>
-        <input type="file" accept="application/pdf" onChange={onInputChange} />
-      </label>
-
-      {status.kind === 'parsing' && <p role="status">Parsing…</p>}
-      {status.kind === 'error' && (
-        <p role="alert" className="upload-error">
-          {status.message}
-        </p>
-      )}
-
-      {status.kind === 'ready' && doc && (
-        <div className="editor-layout">
-          <div className="editor-main">
-            {persistWarning && (
-              <p role="alert" className="persist-warning">
-                {persistWarning}
-              </p>
-            )}
-            <div className="redetect-row">
-              <button
-                type="button"
-                onClick={handleRedetect}
-                disabled={!redetectAvailable || redetectStatus.kind === 'running'}
-                title={
-                  redetectAvailable
-                    ? 'Re-parse this document with AI'
-                    : 'Re-detect is only available before you start editing'
-                }
-              >
-                {redetectStatus.kind === 'running' ? 'Re-detecting…' : 'Re-detect sections with AI'}
-              </button>
-              {redetectStatus.kind === 'error' && (
-                <span role="alert" className="upload-error">
-                  {redetectStatus.message}
-                </span>
-              )}
-              <button type="button" onClick={handleExport}>
-                Export as markdown
-              </button>
-            </div>
-            <DocumentView
-              blocks={blocks}
-              renderParagraph={(block: Block) => (
-                <EditableParagraph block={block} onAccept={handleAccept} onReject={handleReject} />
-              )}
-            />
-          </div>
-          <HistoryPanel
-            history={doc.history}
-            head={doc.head}
-            canUndo={canUndo(doc)}
-            canRedo={canRedo(doc)}
-            onUndo={handleUndo}
-            onRedo={handleRedo}
-          />
+    <>
+      <header className="bar">
+        <div className="brand">
+          <span className="mark">P</span>
+          <span className="name">Proposal Editor</span>
         </div>
-      )}
-    </main>
+        <div className="toolbar">
+          <button
+            type="button"
+            className="btn btn--util"
+            disabled={!doc}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <span className="g">＋</span>
+            <span className="lbl-long">New PDF</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn--util"
+            onClick={handleRedetect}
+            disabled={!doc || !redetectAvailable || redetectStatus.kind === 'running'}
+            title={
+              !doc || redetectAvailable
+                ? 'Re-parse this document with AI'
+                : 'Re-detect is only available before you start editing'
+            }
+          >
+            <span className="g">⟳</span>
+            <span className="lbl-long">{redetectStatus.kind === 'running' ? 'Re-detecting…' : 'Re-detect'}</span>
+          </button>
+          <button
+            type="button"
+            className="btn btn--util"
+            disabled={!doc}
+            onClick={() => setIsHistoryOpen(true)}
+          >
+            <span className="g">◷</span>
+            <span className="lbl-long">History</span>
+            {revisionCount > 0 && <span className="count">{revisionCount}</span>}
+          </button>
+          <button type="button" className="btn btn--util" disabled={!doc} onClick={handleExport}>
+            <span className="g">↧</span>
+            <span className="lbl-long">Export </span>MD
+          </button>
+        </div>
+      </header>
+
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        onChange={onInputChange}
+        className="visually-hidden-input"
+        aria-label="Upload a proposal PDF"
+      />
+
+      <main>
+        <div className="stage">
+          {showUploadView ? (
+            <section className="view-rise">
+              <p className="hero-eyebrow">AI-assisted redlining</p>
+              <h1 className="hero-title">Edit a proposal the way you&apos;d mark up a plan sheet.</h1>
+              <p className="hero-sub">
+                Upload a construction proposal. We split it into editable sections — then you ask
+                for changes in plain language and review every AI edit as a redline before it
+                lands.
+              </p>
+
+              <div
+                className="drop"
+                role="button"
+                tabIndex={0}
+                aria-label="Upload a proposal PDF"
+                onClick={() => fileInputRef.current?.click()}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    fileInputRef.current?.click();
+                  }
+                }}
+              >
+                <div className="ic" aria-hidden="true">
+                  <svg
+                    width="22"
+                    height="22"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M12 16V4M12 4 7 9M12 4l5 5" />
+                    <path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+                  </svg>
+                </div>
+                <h3>Drop a proposal PDF, or choose a file</h3>
+                <p>PDF up to 25&nbsp;MB. Sections are detected automatically.</p>
+                <button type="button" className="btn btn--primary">
+                  Choose file
+                </button>
+                <span className="filehint">Construction proposal · PDF with a text layer</span>
+              </div>
+
+              {status.kind === 'parsing' && <p role="status">Parsing…</p>}
+              {status.kind === 'error' && (
+                <p role="alert" className="upload-error">
+                  {status.message}
+                </p>
+              )}
+            </section>
+          ) : (
+            <section className="view-rise">
+              {persistWarning && (
+                <p role="alert" className="persist-warning">
+                  {persistWarning}
+                </p>
+              )}
+              {redetectStatus.kind === 'error' && (
+                <p role="alert" className="upload-error">
+                  {redetectStatus.message}
+                </p>
+              )}
+              <DocumentView
+                blocks={blocks}
+                renderParagraph={(block, headingText, idx) => (
+                  <EditableParagraph
+                    block={block}
+                    heading={headingText}
+                    index={idx}
+                    onAccept={handleAccept}
+                    onReject={handleReject}
+                  />
+                )}
+              />
+            </section>
+          )}
+        </div>
+      </main>
+
+      <HistoryPanel
+        history={doc?.history ?? []}
+        head={doc?.head ?? -1}
+        canUndo={doc !== null && canUndo(doc)}
+        canRedo={doc !== null && canRedo(doc)}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
+        open={isHistoryOpen}
+        onClose={() => setIsHistoryOpen(false)}
+        blocks={doc?.blocks ?? []}
+      />
+
+      <div className={`toast${toastVisible ? ' show' : ''}`} role="status" aria-live="polite">
+        <span className="g">✓</span>
+        <span>{toastMsg}</span>
+      </div>
+    </>
   );
 }
