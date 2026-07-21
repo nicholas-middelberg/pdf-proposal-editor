@@ -33,6 +33,9 @@ You will be given one paragraph from a proposal and an instruction describing ho
 Rules:
 - Do not change any number, date, dollar amount, or proper name (people, companies, places) unless the instruction explicitly asks you to change that specific fact.
 - Make only the change the instruction asks for. Do not "improve" unrelated parts of the paragraph.
+- The paragraph may be a short fragment rather than prose — an address, a date line, a project number, an attention line, a signature block. That is still the paragraph. Edit it in place; never ask for a different one.
+- If the instruction cannot meaningfully improve the paragraph, return the paragraph exactly as it was given. That is a valid response.
+- Never address the user, ask a question, apologize, or explain yourself. Your entire response is inserted directly into the proposal document.
 - Return ONLY the revised paragraph text. No preamble, no explanation, no quotation marks, no markdown formatting.`;
 
 /**
