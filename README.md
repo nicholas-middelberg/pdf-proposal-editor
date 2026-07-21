@@ -228,11 +228,19 @@ plausible-looking wrong result and nothing signals it.
    errors are distinguished from other storage errors, and a failure surfaces a
    warning instead of losing work invisibly on the next refresh. PDF bytes are
    never persisted (measured: `hard.pdf`'s payload is well under 2 MB).
-6. **The model breaks character on degenerate paragraphs.** Found by the §5 run,
-   not theorized: given a "paragraph" that is just a date and a project number,
-   the model answered conversationally instead of editing. The length guard
-   doesn't catch this (it's 33 characters, well inside limits) — the fact
-   validator caught it as a backstop.
+6. **The model replies about the task instead of doing it.** *(Found by
+   evaluation, since fixed — see §5.)* Given a "paragraph" that is just a date
+   and a project number, the model answered conversationally instead of
+   editing. The length guard can't catch this (33 characters, well inside
+   limits), and — the part that made it worth real work — **the fact validator
+   only caught it because that line happened to be fact-dense.** The same
+   chatter returned for a prose paragraph carrying no numbers, dates, or names
+   produces *no flags at all* and reaches the user looking like a legitimate
+   proposed edit. Now addressed in two layers: the system prompt states that
+   short fragments are still the paragraph and offers an explicit escape hatch
+   (return it unchanged) so refusing is no longer the model's only option, and
+   `lib/nonEdit.ts` rejects non-answers server-side as a deterministic backstop
+   to a nondeterministic model.
 
 **Bugs actually found and fixed during the build** (evidence these modes are
 real, not hypothetical): re-detect responses were being silently truncated at
@@ -251,8 +259,6 @@ grouping; and re-detect regularly exceeded Vercel's default function timeout
 - Measure the **false-positive** rate (build `facts-mini`) — right now I know
   what the validator catches, not what it cries wolf about.
 - Verify the no-text guard against **real scanned PDFs**, not a synthetic one.
-- Add a **minimum-length / degenerate-response guard** for failure mode 6, and
-  reject responses that look like assistant chatter rather than an edit.
 - Fix or explicitly warn on **multi-column** documents — ideally detect columns
   and refuse to pretend the reading order is right.
 - Add the **cumulative drift** check (§7).
@@ -279,17 +285,15 @@ paragraphs × 3 deliberately **fact-neutral** instructions ("Tighten this up.",
 `/api/edit` and scores using the flags that production server returned. Since no
 instruction licenses a fact change, every flag is a leak by construction.
 
-```
-Evaluating 38 paragraphs x 3 instructions = 114 edit calls against fixtures/easy.pdf...
-Target: DEPLOYED https://pdf-proposal-editor.vercel.app/api/edit
+### The first run found a real defect
 
+```
 === Fidelity rates (fact-neutral instructions; any flag = fidelity leak) ===
 Numeric (money/date/number): 99.1% (113/114 clean)
 Name:                        35.1% (40/114 clean)
 ```
 
-**The one numeric leak is a true catch, and it's the most valuable line in this
-README:**
+The single numeric leak was a true catch, and it justified the whole exercise:
 
 ```
 Instruction: "Tighten this up."
@@ -299,15 +303,48 @@ Edit:     Please provide the paragraph you'd like me to tighten up.
   FLAG [number]: Possible unlicensed number change (removed 041, 560).
 ```
 
-The model broke character on a paragraph that is just a date and a project
-number, and returned chatbot filler. Unguarded, accepting that edit would have
-replaced a real line of the proposal with *"Please provide the paragraph you'd
-like me to tighten up."* The validator caught it by noticing every fact had
-vanished. This is failure mode 6 in §4 — found by evaluation, not by reasoning.
+The model read a short metadata line as "no paragraph was supplied" and replied
+instead of editing. Accepting that proposal would have replaced a real line of
+the bid with chatbot filler. **Found by evaluation, not by reasoning** — and
+worse than it first appears, because the fact validator only noticed thanks to
+that line being fact-dense; identical chatter on a prose paragraph would have
+produced no flags at all (failure mode 6 in §4).
 
-**Reading the 35.1% name number correctly: it is mostly the extractor's fault,
-not the model's.** Inspecting the flagged cases, the dominant pattern is
-harmless repunctuation and expansion:
+### The fix, and the re-run
+
+Two layers (`lib/ai.ts`, `lib/nonEdit.ts`): the prompt now establishes that short
+fragments are still the paragraph and offers an explicit escape hatch — *if the
+instruction cannot improve it, return it unchanged* — so refusing stopped being
+the model's only way out; and a deterministic guard rejects non-answers
+server-side, because a prompt change shifts probabilities rather than
+guaranteeing anything.
+
+Same batch, same deployed target, after the fix:
+
+```
+=== Fidelity rates (fact-neutral instructions; any flag = fidelity leak) ===
+Numeric (money/date/number): 100.0% (114/114 clean)
+Name:                        50.9% (58/114 clean)
+```
+
+Three things worth reading off that:
+
+- **The leak is closed** — 99.1% → 100.0%, and the previously failing case now
+  returns the line unchanged, which is the correct edit for "tighten" applied to
+  a date and a project number.
+- **Name fidelity improved 35.1% → 50.9% without touching the extractor.** That
+  is the escape hatch working: the model now leaves fragments alone instead of
+  gratuitously reformatting them, and most name flags were always
+  repunctuation noise from exactly that kind of fiddling. Fewer unnecessary
+  edits, fewer false alarms.
+- **The guard fired zero times across 114 real edits** — no chatter to catch
+  (prevention held) and, more importantly, no false rejections of legitimate
+  edits. That is the number I'd have worried about most when adding a guard that
+  can block a user's work.
+
+**Reading the name number correctly: it is still mostly the extractor's fault,
+not the model's**, and still a floor. The dominant remaining pattern is harmless
+repunctuation and expansion:
 
 ```
 Original: 2701 Industrial Drive Jefferson City, MO 65109
@@ -324,12 +361,13 @@ addition. This is the documented floor (D-013), not a hidden fidelity problem.
 - **Both numbers are bounded by extraction recall.** A fact the regex misses
   makes fidelity look *better* than reality. These are floors.
 - **False positives are unmeasured.** With `facts-mini` cut (§3), I can say what
-  the validator catches but not how often it cries wolf. The 35.1% figure is the
+  the validator catches but not how often it cries wolf. The name figure is the
   direct victim of that cut.
-- **n=1 run, 114 calls, and the model is nondeterministic.** An earlier run of
-  the identical batch scored 100% numeric; this one scored 99.1%. A single run
-  pins the rate loosely at best — production would need this on a schedule with
-  the trend tracked, not a one-off number.
+- **The model is nondeterministic and these are single runs.** Three runs of this
+  batch scored 100%, 99.1%, and 100% numeric. The fix is a real improvement — the
+  specific failure was reproduced, understood, and probed 6/6 clean afterwards —
+  but a single 114-call run pins a rate loosely at best. Production would track
+  the trend on a schedule, not quote a one-off number.
 
 **What I'd add in production:** run this batch on every model or prompt change
 and block the deploy on a numeric-fidelity regression; log accept/reject rates
@@ -376,10 +414,19 @@ instruction didn't license. Three judgment calls shaped it:
   extraction is near-perfect; name extraction is weak. Averaging them would
   launder a weak signal into a confident-looking one.
 
-It isn't decoration: §5 shows it catching a real failure on the deployed app,
-where the model returned chatbot filler in place of a proposal line and the
-guard caught it by noticing every fact had vanished. That single catch is the
-best argument for the feature existing.
+It isn't decoration, and I can show the loop closing rather than just assert it:
+the eval in §5 caught the model returning chatbot filler in place of a proposal
+line, that catch turned into a diagnosis and a two-layer fix, and the re-run went
+from 99.1% to 100% numeric fidelity — with name fidelity improving from 35.1% to
+50.9% as a side effect, because the fix stopped the model making unnecessary
+edits in the first place. Measurement → defect → fix → re-measurement is the
+argument for building the guardrail at all.
+
+A sibling guard came out of that investigation: a *bad* edit is the human's call,
+but a model **reply** where an edit should be is a non-answer, so `lib/nonEdit.ts`
+refuses it server-side instead of rendering something acceptable. Same instinct
+as constraining re-detect below — decide deliberately where the model is allowed
+to have authority, and take it away everywhere else.
 
 ### Addition 2: two paths to document structure, with the AI constrained
 
