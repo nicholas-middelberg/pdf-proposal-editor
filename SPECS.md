@@ -258,16 +258,16 @@ to warn the user and offline to produce a number.
 
 ## Definition of done
 Run against the **easy fixture on the deployed app**:
-- [ ] Upload easy.pdf → parses into sensible headings + paragraphs.
-- [ ] Select a paragraph, give an instruction, receive a proposed edit.
-- [ ] Diff renders; accept applies it; reject discards it.
-- [ ] A second edit on the same paragraph composes on top of the first.
-- [ ] Undo reverts the last accepted edit.
-- [ ] Refresh the page → document and history are still there.
-- [ ] Upload a scanned/no-text PDF → clear error, no crash.
-- [ ] Export produces markdown reflecting all accepted edits.
-- [ ] `npm test` — parser unit tests pass against easy.pdf.
-- [ ] Proxy token does not appear in the client bundle
+- [x] Upload easy.pdf → parses into sensible headings + paragraphs.
+- [x] Select a paragraph, give an instruction, receive a proposed edit.
+- [x] Diff renders; accept applies it; reject discards it.
+- [x] A second edit on the same paragraph composes on top of the first.
+- [x] Undo reverts the last accepted edit.
+- [x] Refresh the page → document and history are still there.
+- [x] Upload a scanned/no-text PDF → clear error, no crash.
+- [x] Export produces markdown reflecting all accepted edits.
+- [x] `npm test` — parser unit tests pass against easy.pdf.
+- [x] Proxy token does not appear in the client bundle
       (`grep -r "$PROXY_TOKEN" .next/static` returns nothing).
-- [ ] `scripts/eval.ts` runs against the easy fixture and prints both
+- [x] `scripts/eval.ts` runs against the easy fixture and prints both
       fidelity rates + examples; output pasted into the README.
