@@ -7,7 +7,7 @@
 // shown, so streaming would only buy "watch it type," not "act on it sooner."
 
 import { NextResponse } from 'next/server';
-import { getAnthropicClient, EDIT_MODEL } from '../../../lib/ai';
+import { getAnthropicClient, EDIT_MODEL, proposeEdit } from '../../../lib/ai';
 import { compareFacts } from '../../../lib/facts/compare';
 import { paragraphLengthError } from '../../../lib/limits';
 import { dedupe } from '../../../lib/pdf/segment';
@@ -20,17 +20,6 @@ import type { EditProposal, EditRequest, ParseResult, PositionedItem } from '../
 // verify against the actual Vercel plan at deploy time (Task 11), the real
 // ceiling varies by plan.
 export const maxDuration = 120;
-
-// Fixes the role, forbids changing facts unless instructed, and asks for the
-// revised paragraph only — no preamble, so the diff stays clean (D-012).
-const EDIT_SYSTEM_PROMPT = `You are an editing assistant for AEC (architecture, engineering, construction) proposal documents.
-
-You will be given one paragraph from a proposal and an instruction describing how to change it. Rewrite the paragraph according to the instruction.
-
-Rules:
-- Do not change any number, date, dollar amount, or proper name (people, companies, places) unless the instruction explicitly asks you to change that specific fact.
-- Make only the change the instruction asks for. Do not "improve" unrelated parts of the paragraph.
-- Return ONLY the revised paragraph text. No preamble, no explanation, no quotation marks, no markdown formatting.`;
 
 function isEditRequest(body: unknown): body is EditRequest {
   if (!body || typeof body !== 'object') return false;
@@ -62,15 +51,7 @@ async function handleEdit({ blockId, text, instruction }: EditRequest) {
 
   let proposed: string;
   try {
-    const client = getAnthropicClient();
-    const response = await client.messages.create({
-      model: EDIT_MODEL,
-      max_tokens: 4096,
-      system: EDIT_SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: `Instruction: ${instruction}\n\nParagraph:\n${text}` }],
-    });
-    const block = response.content.find((b) => b.type === 'text');
-    proposed = block?.type === 'text' ? block.text.trim() : '';
+    proposed = await proposeEdit(text, instruction);
   } catch (err) {
     console.error('POST /api/edit: model call failed', err);
     return NextResponse.json({ error: 'The AI edit failed. Please try again.' }, { status: 502 });
